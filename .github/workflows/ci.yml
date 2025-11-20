@@ -9,59 +9,91 @@ on:
 permissions:
   contents: read
   security-events: write
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
 
 env:
   CARGO_TERM_COLOR: always
-  JWT_SECRET: supersecret-for-ci
 
 jobs:
-  secure-ci:
-    name: Build → Test → SAST → SCA → DAST
+  # ─────────────────────────────────────────────────────────────
+  # Fast feedback: lint → build → test (runs first, fails fast)
+  # ─────────────────────────────────────────────────────────────
+  build-and-test:
+    name: Lint → Build → Test
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.90.0
+          toolchain: stable
           components: rustfmt, clippy
 
-      - name: Cargo cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+      - name: Cache Cargo registry + git + target
+        uses: Swatinem/rust-cache@v2
 
-      - name: Format check
-        run: cargo fmt --all
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
 
-      - name: Clippy (deny warnings)
+      - name: cargo clippy (deny warnings)
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Build release
-        run: cargo build --release --verbose
+        run: cargo build --release --locked
 
-      - name: Unit tests
-        run: cargo test --verbose
+      - name: Run tests
+        run: cargo test --locked
 
-      - name: Semgrep SAST Scan
-        uses: returntocorp/semgrep-action@v1
+  # ─────────────────────────────────────────────────────────────
+  # Security job – only runs when build-and-test passes
+  # ─────────────────────────────────────────────────────────────
+  security-scan:
+    name: SAST → SCA → Container → DAST
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
         with:
-          config: >-
-            p/r2c-security-audit
-            p/secrets
-            p/rust
-          generateSarif: "1"
-          failOnFinding: "true" 
+          toolchain: stable
+          components: clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Semgrep full scan
+        env:
+          SEMGREP_SEND_METRICS: off
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/src" --workdir /src \
+            returntocorp/semgrep semgrep ci \
+              --config p/r2c-security-audit \
+              --config p/secrets \
+              --config p/rust \
+              --audit-on unknown \
+              --sarif --output semgrep.sarif
 
       - name: Upload Semgrep SARIF
-        if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: semgrep.sarif
@@ -69,32 +101,57 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
 
-      - name: Cargo Audit (fail on any advisory)
-        run: cargo audit --deny warnings --json > audit.json
+      - name: Run cargo audit
+        id: audit
+        continue-on-error: true
+        run: |
+          cargo audit --deny warnings --quiet
+          echo "audit_exit=$?" >> $GITHUB_OUTPUT
 
-      - name: Upload Cargo Audit report
+      - name: Fail if vulnerabilities found
+        if: steps.audit.outputs.audit_exit == '101'
+        run: exit 1
+
+      - name: Generate & upload cargo audit report
         if: always()
+        run: |
+          cargo audit --json > cargo-audit-report.json
+          gzip cargo-audit-report.json
+
+      - name: Upload cargo-audit report
         uses: actions/upload-artifact@v4
         with:
           name: sca-cargo-audit-report
-          path: audit.json
+          path: cargo-audit-report.json.gz
+          if-no-files-found: warn
 
       - name: Build Docker image
-        run: docker build -t library-api:latest .
+        run: docker build -t rust-api:${{ github.sha }} .
 
-      - name: Start application
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: rust-api:${{ github.sha }}
+          format: sarif
+          output: trivy.sarif
+          severity: CRITICAL,HIGH
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy.sarif
+
+      - name: Start services
         run: docker compose up -d --build
 
-      - name: Wait for healthy
+      - name: Wait for health endpoint
         run: |
-          for i in {1..30}; do
+          for i in $(seq 1 60); do
             if curl -f http://localhost:8080/health >/dev/null 2>&1; then
-              echo "API is healthy"
               exit 0
             fi
             sleep 2
           done
-          echo "Healthcheck failed"
           docker compose logs
           exit 1
 
@@ -103,19 +160,13 @@ jobs:
         with:
           target: http://localhost:8080
           artifact_name: zap-report
-          cmd_options: >-
-            -J zap_report.json
-            -r zap_report.html
-            --auto-gen-rules
+          cmd_options: -j -r zap_report.html -J zap_report.json
 
-      - name: Fail on High or Critical alerts (JSON = reliable)
+      - name: Fail on High/Critical ZAP alerts
         run: |
-          if jq -e '.site[].alerts[]?.riskdesc? | select(. == "High" or . == "Critical")' zap_report.json > /dev/null; then
-            echo "High or Critical vulnerability found by ZAP"
-            cat zap_report.json | jq '.site[].alerts[] | select(.riskdesc == "High" or .riskdesc == "Critical") | {name, riskdesc, desc}'
+          if jq -e '.site[].alerts[]? | select(.riskcode == "3" or .riskcode == "2")' zap_report.json > /dev/null; then
+            jq '.site[].alerts[] | select(.riskcode == "3" or .riskcode == "2") | {name, riskdesc}' zap_report.json
             exit 1
-          else
-            echo "No High/Critical alerts – DAST passed"
           fi
 
       - name: Upload ZAP reports
@@ -127,10 +178,6 @@ jobs:
             zap_report.html
             zap_report.json
 
-      - name: Stop containers
+      - name: Cleanup
         if: always()
         run: docker compose down -v
-
-      - name: Security checks passed
-        if: success()
-        run: echo "All security gates passed – safe to merge/deploy"

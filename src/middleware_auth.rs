@@ -4,7 +4,6 @@ use axum::{body::Body, extract::State, http::Request, middleware::Next, response
 
 use crate::{AppState, errors::AppError, models::Claims, utils::decode_jwt};
 
-
 /// Authentication middleware validating JWT access tokens.
 ///
 /// # Errors

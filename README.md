@@ -42,7 +42,7 @@ Protected (Bearer JWT):
 - GET  /api/v1/books/:id
 - POST /api/v1/loans
 - POST /api/v1/loans/:id/return
-- POST /api/v1/upload (multipart image)
+- POST /api/v1/upload
 - GET  /api/v1/external/posts
 
 ### Security Features
@@ -73,8 +73,8 @@ Sequential Quality Gate (single job):
 Reports (artifacts):
 
 - semgrep.sarif (SAST)
-- audit.json (SCA)
-- zap_report.html (DAST)
+- audit.json (SCA cargo-audit)
+- zap_report.html / zap_report.json (DAST)
 
 ## Running Locally
 

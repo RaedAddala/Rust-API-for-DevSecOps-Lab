@@ -12,14 +12,19 @@ use validator::Validate;
 use crate::{
     AppState,
     errors::{AppError, AppResult},
-    models::{RegisterRequest, UserResponse, User, LoginRequest, TokenResponse, BookResponse, Book, CreateBookRequest, BorrowRequest},
+    models::{
+        Book, BookResponse, BorrowRequest, CreateBookRequest, LoginRequest, RegisterRequest,
+        TokenResponse, User, UserResponse,
+    },
     utils::{create_jwt_tokens, fetch_placeholder_posts, hash_password, verify_password},
 };
 
 /// Health check endpoint.
 #[must_use]
 #[allow(clippy::unused_async)]
-pub async fn health_check() -> &'static str { "OK" }
+pub async fn health_check() -> &'static str {
+    "OK"
+}
 
 /// Register a new user.
 ///
@@ -63,10 +68,12 @@ pub async fn login(
         .validate()
         .map_err(|e| AppError::Validation(e.to_string()))?;
 
-    let user = sqlx::query_as::<_, User>("SELECT id, email, password_hash, created_at FROM users WHERE email = $1")
-        .bind(&payload.email)
-        .fetch_optional(&state.db)
-        .await?;
+    let user = sqlx::query_as::<_, User>(
+        "SELECT id, email, password_hash, created_at FROM users WHERE email = $1",
+    )
+    .bind(&payload.email)
+    .fetch_optional(&state.db)
+    .await?;
 
     let user = user.ok_or(AppError::InvalidCredentials)?;
 
@@ -94,9 +101,14 @@ pub async fn refresh_token(
     Json(body): Json<TokenResponse>,
 ) -> AppResult<Json<TokenResponse>> {
     let claims = crate::utils::decode_jwt(&body.refresh_token, &state.config)?;
-    if !claims.refresh { return Err(AppError::Unauthorized); }
+    if !claims.refresh {
+        return Err(AppError::Unauthorized);
+    }
     let (access, refresh) = create_jwt_tokens(claims.sub, &state.config)?;
-    Ok(Json(TokenResponse { access_token: access, refresh_token: refresh }))
+    Ok(Json(TokenResponse {
+        access_token: access,
+        refresh_token: refresh,
+    }))
 }
 
 /// List all books.
@@ -107,7 +119,17 @@ pub async fn list_books(State(state): State<Arc<AppState>>) -> AppResult<Json<Ve
     let books = sqlx::query_as::<_, Book>("SELECT id, owner_id, title, author, isbn, description, created_at FROM books ORDER BY created_at DESC")
         .fetch_all(&state.db).await?;
 
-    let resp = books.into_iter().map(|b| BookResponse { id: b.id, title: b.title, author: b.author, isbn: b.isbn, description: b.description, owner_id: b.owner_id }).collect();
+    let resp = books
+        .into_iter()
+        .map(|b| BookResponse {
+            id: b.id,
+            title: b.title,
+            author: b.author,
+            isbn: b.isbn,
+            description: b.description,
+            owner_id: b.owner_id,
+        })
+        .collect();
     Ok(Json(resp))
 }
 
@@ -135,7 +157,14 @@ pub async fn create_book(
         .fetch_one(&state.db)
         .await?;
 
-    let resp = BookResponse { id: book.id, title: book.title, author: book.author, isbn: book.isbn, description: book.description, owner_id: book.owner_id };
+    let resp = BookResponse {
+        id: book.id,
+        title: book.title,
+        author: book.author,
+        isbn: book.isbn,
+        description: book.description,
+        owner_id: book.owner_id,
+    };
     Ok((StatusCode::CREATED, Json(resp)))
 }
 
@@ -153,7 +182,14 @@ pub async fn get_book(
         .await?;
 
     let book = book.ok_or(AppError::NotFound)?;
-    let resp = BookResponse { id: book.id, title: book.title, author: book.author, isbn: book.isbn, description: book.description, owner_id: book.owner_id };
+    let resp = BookResponse {
+        id: book.id,
+        title: book.title,
+        author: book.author,
+        isbn: book.isbn,
+        description: book.description,
+        owner_id: book.owner_id,
+    };
     Ok(Json(resp))
 }
 
@@ -210,23 +246,41 @@ pub async fn upload_file(
     axum::Extension(user_id): axum::Extension<Uuid>,
     mut multipart: Multipart,
 ) -> AppResult<StatusCode> {
-    while let Some(field) = multipart.next_field().await.map_err(|e| AppError::Anyhow(e.into()))? {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::Anyhow(e.into()))?
+    {
         let name = field.name().unwrap_or("file").to_string();
         let file_name = field.file_name().unwrap_or("upload.bin").to_string();
-        let content_type = field.content_type().map(std::string::ToString::to_string).unwrap_or_default();
+        let content_type = field
+            .content_type()
+            .map(std::string::ToString::to_string)
+            .unwrap_or_default();
 
         // Basic type validation
-        if !["image/png", "image/jpeg"].contains(&content_type.as_str()) { return Err(AppError::Validation("unsupported file type".into())); }
+        if !["image/png", "image/jpeg"].contains(&content_type.as_str()) {
+            return Err(AppError::Validation("unsupported file type".into()));
+        }
 
-        let data = field.bytes().await.map_err(|e| AppError::Anyhow(e.into()))?;
-        if (data.len() as u64) > state.config.max_upload_bytes { return Err(AppError::Validation("file too large".into())); }
+        let data = field
+            .bytes()
+            .await
+            .map_err(|e| AppError::Anyhow(e.into()))?;
+        if (data.len() as u64) > state.config.max_upload_bytes {
+            return Err(AppError::Validation("file too large".into()));
+        }
 
         // Virus scan stub (no vulnerability here)
         tracing::info!("Virus scan stub for user {user_id} file {file_name} (field {name})");
 
         let path = format!("{}/{}", state.config.upload_dir, file_name);
-        let mut file = tokio::fs::File::create(path).await.map_err(|e| AppError::Anyhow(e.into()))?;
-        file.write_all(&data).await.map_err(|e| AppError::Anyhow(e.into()))?;
+        let mut file = tokio::fs::File::create(path)
+            .await
+            .map_err(|e| AppError::Anyhow(e.into()))?;
+        file.write_all(&data)
+            .await
+            .map_err(|e| AppError::Anyhow(e.into()))?;
     }
 
     Ok(StatusCode::CREATED)

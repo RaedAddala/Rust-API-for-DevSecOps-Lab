@@ -51,8 +51,10 @@ pub fn verify_password(password: &str, hash: &str) -> AppResult<bool> {
 pub fn create_jwt_tokens(user_id: Uuid, config: &Config) -> AppResult<(String, String)> {
     let access_ts = (Utc::now() + Duration::minutes(15)).timestamp();
     let refresh_ts = (Utc::now() + Duration::days(7)).timestamp();
-    let access_exp = usize::try_from(access_ts).map_err(|e| AppError::Anyhow(anyhow!(e.to_string())))?;
-    let refresh_exp = usize::try_from(refresh_ts).map_err(|e| AppError::Anyhow(anyhow!(e.to_string())))?;
+    let access_exp =
+        usize::try_from(access_ts).map_err(|e| AppError::Anyhow(anyhow!(e.to_string())))?;
+    let refresh_exp =
+        usize::try_from(refresh_ts).map_err(|e| AppError::Anyhow(anyhow!(e.to_string())))?;
 
     let access_claims = Claims {
         sub: user_id,

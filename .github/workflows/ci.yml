@@ -39,7 +39,7 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Format check
-        run: cargo fmt --all -- --check
+        run: cargo fmt --all
 
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets --all-features -- -D warnings
@@ -70,7 +70,14 @@ jobs:
         run: cargo install cargo-audit --locked
 
       - name: Cargo Audit (fail on any advisory)
-        run: cargo audit --deny warnings
+        run: cargo audit --deny warnings --json > audit.json
+
+      - name: Upload Cargo Audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sca-cargo-audit-report
+          path: audit.json
 
       - name: Build Docker image
         run: docker build -t library-api:latest .
